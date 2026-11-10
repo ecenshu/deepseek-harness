@@ -26,6 +26,22 @@ export type {
 export { workspaceDomainState, workspaceRecord, workspaceDomainSpec } from './spec.ts'
 export type { WorkspaceDomainState, WorkspaceRecord } from './spec.ts'
 export { realpathNormalize } from './paths.ts'
+/**
+ * Canonical directories that may own a session whose canonical cwd is `cwd`,
+ * most specific first.
+ *
+ * Evaluates two rules beyond `cwd` itself:
+ * 1. Layout rule: each ancestor `P` where the next path segment is exactly
+ *    `worktrees` and `cwd` lies below `P/worktrees/<name>`, nearest first.
+ * 2. Git rule: walk up from `cwd` to the nearest ancestor with a `.git` entry.
+ *    If `.git` is a file with `gitdir: X` and `X/commondir` resolves to a
+ *    directory whose basename is `.git`, add the canonical parent of that
+ *    common directory.
+ *
+ * @param cwd - Canonical (`realpathNormalize`d) existing working directory.
+ * @returns Ordered list of canonical candidate owner directories with duplicates removed.
+ */
+export { ownerCandidatePaths } from './owner-paths.ts'
 
 /** Identifies one workspace record (see `src/types.ts` for the brand rationale). */
 export type WorkspaceId = WorkspaceIdBrand
