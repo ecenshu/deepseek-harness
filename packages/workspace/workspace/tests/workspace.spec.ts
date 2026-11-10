@@ -22,6 +22,7 @@ import WorkspaceRegistry, {
 import type { WorkspaceDomainState, WorkspaceRecord } from '../src/index.ts'
 import { defaultWorkspaceTitle, fullyQualifiedWorkspacePath } from '../src/paths.ts'
 import * as workspacePaths from '../src/paths.ts'
+import * as ownerPaths from '../src/owner-paths.ts'
 
 const DOMAIN_VERSION = 2
 
@@ -925,7 +926,7 @@ describe('header-validated membership projection', () => {
       sessions: [
         header('good', owned),
         header('mismatch', elsewhere),
-        header('cwd-only', owned),
+        { ...header('cwd-only', owned), origin: 'subagent' },
       ],
     })
     const workspace = result.registry.list()[0]!
@@ -1540,21 +1541,22 @@ describe('first-use Workspace preparation', () => {
   })
 })
 
+async function makeWorktree(repoName: string, worktreeName: string) {
+  const repo = await makeDir(repoName)
+  const canonicalRepo = await realpath(repo)
+  const commondirDir = join(canonicalRepo, '.git', 'worktrees', worktreeName)
+  await mkdir(commondirDir, { recursive: true })
+  await writeFile(join(commondirDir, 'commondir'), '../..\n')
+
+  const worktree = join(canonicalRepo, 'worktrees', worktreeName)
+  await mkdir(worktree, { recursive: true })
+  const canonicalWorktree = await realpath(worktree)
+  await writeFile(join(canonicalWorktree, '.git'), `gitdir: ${commondirDir}\n`)
+
+  return { repo: canonicalRepo, worktree: canonicalWorktree }
+}
+
 describe('worktree ownership', () => {
-  async function makeWorktree(repoName: string, worktreeName: string) {
-    const repo = await makeDir(repoName)
-    const canonicalRepo = await realpath(repo)
-    const commondirDir = join(canonicalRepo, '.git', 'worktrees', worktreeName)
-    await mkdir(commondirDir, { recursive: true })
-    await writeFile(join(commondirDir, 'commondir'), '../..\n')
-
-    const worktree = join(canonicalRepo, 'worktrees', worktreeName)
-    await mkdir(worktree, { recursive: true })
-    const canonicalWorktree = await realpath(worktree)
-    await writeFile(join(canonicalWorktree, '.git'), `gitdir: ${commondirDir}\n`)
-
-    return { repo: canonicalRepo, worktree: canonicalWorktree }
-  }
 
   it('attaches a session whose cwd is a linked worktree of the workspace', async () => {
     const { repo, worktree } = await makeWorktree('repo-attach', 'wt')
@@ -1640,6 +1642,138 @@ describe('worktree ownership', () => {
     onTestFinished(() => result.ctx.fiber.dispose())
     await result.registry.create(repo)
     expect(await result.registry.resolveByPath(worktree)).toBeUndefined()
+  })
+})
+
+describe('session adoption', () => {
+  it('adopts an unaccounted session whose cwd is the workspace path', async () => {
+    const dir = await makeDir('adopt-main')
+    const result = await harness()
+    onTestFinished(() => result.ctx.fiber.dispose())
+    const workspace = await result.registry.create(dir)
+    const sessionHdr = header('unaccounted-main', dir)
+    const adopted = await result.registry.adoptSessions([sessionHdr])
+    expect(adopted).toEqual([SessionId('unaccounted-main')])
+    expect(workspace.sessionIds).toContain('unaccounted-main')
+  })
+
+  it('adopts an unaccounted worktree session into the owning workspace', async () => {
+    const { repo, worktree } = await makeWorktree('adopt-wt', 'wt')
+    const result = await harness()
+    onTestFinished(() => result.ctx.fiber.dispose())
+    const workspace = await result.registry.create(repo)
+    const sessionHdr = header('unaccounted-wt', worktree)
+    const adopted = await result.registry.adoptSessions([sessionHdr])
+    expect(adopted).toEqual([SessionId('unaccounted-wt')])
+    expect(workspace.sessionIds).toContain('unaccounted-wt')
+  })
+
+  it('skips subagent-origin sessions', async () => {
+    const dir = await makeDir('adopt-subagent')
+    const result = await harness()
+    onTestFinished(() => result.ctx.fiber.dispose())
+    const workspace = await result.registry.create(dir)
+    const sessionHdr: SessionHeader = {
+      ...header('subagent-session', dir),
+      origin: 'subagent',
+    }
+    const adopted = await result.registry.adoptSessions([sessionHdr])
+    expect(adopted).toEqual([])
+    expect(workspace.sessionIds).not.toContain('subagent-session')
+  })
+
+  it('leaves a session accounted by another workspace where it is', async () => {
+    const { repo, worktree } = await makeWorktree('adopt-accounted', 'wt')
+    const otherDir = await makeDir('other-owner')
+    const idS = WorkspaceId('00000000-0000-4000-8000-000000000001')
+    const idR = WorkspaceId('00000000-0000-4000-8000-000000000002')
+    const pool = storedPool(
+      [
+        [idS, record(otherDir, ['shared-session'])],
+        [idR, record(repo, [])],
+      ],
+      { initialized: true, workspaceIds: [idS, idR] },
+    )
+    const sessionHdr = header('shared-session', worktree)
+    const result = await harness({ pool, sessions: [sessionHdr] })
+    onTestFinished(() => result.ctx.fiber.dispose())
+    const adopted = await result.registry.adoptSessions([sessionHdr])
+    expect(adopted).toEqual([])
+    expect(storedRecord(pool, idS).sessionIds).toEqual(['shared-session'])
+    expect(storedRecord(pool, idR).sessionIds).not.toContain('shared-session')
+  })
+
+  it('writes nothing when every session is already accounted', async () => {
+    const dir = await makeDir('adopt-no-write')
+    const id = WorkspaceId('00000000-0000-4000-8000-000000000003')
+    const pool = storedPool([[id, record(dir, ['accounted-session'])]], { initialized: true, workspaceIds: [id] })
+    const sessionHdr = header('accounted-session', dir)
+    const result = await harness({ pool, sessions: [sessionHdr] })
+    onTestFinished(() => result.ctx.fiber.dispose())
+    const changeCountBefore = result.changes.length
+    const adopted = await result.registry.adoptSessions([sessionHdr])
+    expect(adopted).toEqual([])
+    expect(result.changes.length).toBe(changeCountBefore)
+  })
+
+  it('adopts at registry start', async () => {
+    const { repo, worktree } = await makeWorktree('adopt-start', 'wt')
+    const id = WorkspaceId('00000000-0000-4000-8000-000000000004')
+    const pool = storedPool([[id, record(repo, [])]], { initialized: true, workspaceIds: [id] })
+    const sessionHdr = header('unaccounted-at-start', worktree)
+    const result = await harness({ pool, sessions: [sessionHdr] })
+    onTestFinished(() => result.ctx.fiber.dispose())
+    expect(result.registry.get(id)?.sessionIds).toContain('unaccounted-at-start')
+  })
+
+  it('evaluates ownerCandidatePaths only once for multiple sessions with the same cwd', async () => {
+    const dir = await makeDir('owner-cache-dedup')
+    const spy = vi.spyOn(ownerPaths, 'ownerCandidatePaths')
+    onTestFinished(() => { spy.mockRestore() })
+    const result = await harness({
+      sessions: [
+        header('session-1', dir),
+        header('session-2', dir),
+      ],
+    })
+    onTestFinished(() => result.ctx.fiber.dispose())
+    const callsForDir = spy.mock.calls.filter(([p]) => p === dir)
+    expect(callsForDir.length).toBe(1)
+  })
+
+  it('adopts multiple unaccounted sessions oldest createdAt first with id tie-breaking', async () => {
+    const dir = await makeDir('adopt-multi-sort')
+    const result = await harness()
+    onTestFinished(() => result.ctx.fiber.dispose())
+    const workspace = await result.registry.create(dir)
+    const sessionOlder = { ...header('older-b', dir, 10) }
+    const sessionOlderA = { ...header('older-a', dir, 10) }
+    const sessionNewer = { ...header('newer-c', dir, 20) }
+    const adopted = await result.registry.adoptSessions([sessionNewer, sessionOlder, sessionOlderA])
+    expect(adopted).toEqual([SessionId('older-a'), SessionId('older-b'), SessionId('newer-c')])
+    expect(workspace.sessionIds).toEqual(['newer-c', 'older-b', 'older-a'])
+  })
+
+  it('skips headers with undefined cwd, unresolvable cwd, and duplicate candidates in same run', async () => {
+    const dir = await makeDir('adopt-edge')
+    const result = await harness()
+    onTestFinished(() => result.ctx.fiber.dispose())
+    const workspace = await result.registry.create(dir)
+    const missingCwd = header('missing-cwd', undefined)
+    const badCwd = header('bad-cwd', join(dir, 'nonexistent', 'sub'))
+    const valid = header('valid-dup', dir)
+    const dup = header('valid-dup', dir)
+    const adopted = await result.registry.adoptSessions([missingCwd, badCwd, valid, dup])
+    expect(adopted).toEqual([SessionId('valid-dup')])
+    expect(workspace.sessionIds).toContain('valid-dup')
+  })
+
+  it('resolveByPath returns the workspace for an existing registered directory', async () => {
+    const dir = await makeDir('resolve-exact-path')
+    const result = await harness()
+    onTestFinished(() => result.ctx.fiber.dispose())
+    const workspace = await result.registry.create(dir)
+    expect(await result.registry.resolveByPath(dir)).toBe(workspace)
   })
 })
 

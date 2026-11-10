@@ -194,6 +194,7 @@ export class WorkspaceRegistry extends Service {
   private readonly headers = new Map<SessionId, SessionHeader>()
   private readonly sessionPaths = new Map<SessionId, string>()
   private readonly sessionOwnerPaths = new Map<SessionId, readonly string[]>()
+  private readonly ownerCandidateCache = new Map<string, readonly string[]>()
   private readonly missingSessionPaths = new Set<SessionId>()
   private readonly invalidSessionPaths = new Map<SessionId, string>()
   private operationTail: Promise<void> = Promise.resolve()
@@ -202,9 +203,11 @@ export class WorkspaceRegistry extends Service {
     table: () => this.requireTable(),
     candidateMatches: (id, path) => this.sessionOwnerPaths.get(id)?.includes(path) === true || this.missingSessionPaths.has(id),
     readSessionHeader: id => this.readSessionHeader(id),
+    ownerCandidates: canonicalCwd => this.getOwnerCandidatePaths(canonicalCwd),
     rememberSessionPath: (id, path, owners) => {
       this.sessionPaths.set(id, path)
       this.sessionOwnerPaths.set(id, owners)
+      this.ownerCandidateCache.set(path, owners)
       this.missingSessionPaths.delete(id)
       this.invalidSessionPaths.delete(id)
     },
@@ -235,6 +238,7 @@ export class WorkspaceRegistry extends Service {
     await this.indexLiveSessions()
     this.validateStoredState(this.requireState())
     this.rebuildEntities()
+    await this.adoptSessions([...this.headers.values()])
     this.reportFilteredCandidates()
   }
 
@@ -527,6 +531,20 @@ export class WorkspaceRegistry extends Service {
   }
 
   /**
+   * Resolve owner candidate paths for a canonical directory with in-memory caching.
+   * Cached for the registry lifetime because worktree layout and git common directories
+   * only change if a worktree is moved or removed.
+   */
+  private async getOwnerCandidatePaths(canonicalCwd: string): Promise<readonly string[]> {
+    let candidates = this.ownerCandidateCache.get(canonicalCwd)
+    if (candidates === undefined) {
+      candidates = await ownerCandidatePaths(canonicalCwd)
+      this.ownerCandidateCache.set(canonicalCwd, candidates)
+    }
+    return candidates
+  }
+
+  /**
    * Resolve the owning workspace for a directory path without creating or
    * mutating a workspace. Evaluates owner candidates (the directory itself,
    * layout ancestors, and git common directory) and returns the entity for
@@ -538,13 +556,61 @@ export class WorkspaceRegistry extends Service {
    */
   async resolveOwner(path: string): Promise<Workspace | undefined> {
     const canonical = await realpathNormalize(path)
-    const candidates = await ownerCandidatePaths(canonical)
+    const candidates = await this.getOwnerCandidatePaths(canonical)
     for (const candidate of candidates) {
       for (const entity of this.entities.values()) {
         if (entity.path === candidate) return entity
       }
     }
     return undefined
+  }
+
+  /**
+   * Adopt unaccounted sessions into their owning workspaces.
+   * Runs on the operation queue. For each header that is not accounted by any
+   * workspace record, does not originate from a subagent, and has a resolvable
+   * working directory, resolves its owning workspace and attaches the session.
+   * Headers are processed oldest `createdAt` first so the newest session ends up
+   * first in the workspace order.
+   *
+   * @param headers - Session headers to evaluate for adoption.
+   * @returns Identities of all newly adopted sessions.
+   */
+  adoptSessions(headers: readonly SessionHeader[]): Promise<readonly SessionId[]> {
+    return this.enqueueOperation(async () => {
+      const table = this.requireTable()
+      const accounted = new Set<SessionId>()
+      for (const [_id, record] of table.entries()) {
+        for (const sessionId of record.sessionIds) {
+          accounted.add(sessionId)
+        }
+      }
+
+      const candidates = headers
+        .filter((header): header is SessionHeader & { readonly cwd: string } =>
+          !accounted.has(header.id) && header.origin !== 'subagent' && header.cwd !== undefined)
+        .slice()
+        .sort((a, b) => a.createdAt - b.createdAt || String(a.id).localeCompare(String(b.id)))
+
+      const adopted: SessionId[] = []
+      for (const header of candidates) {
+        if (accounted.has(header.id)) continue
+        if (!this.headers.has(header.id)) {
+          await this.indexHeader(header)
+        }
+        try {
+          const owner = await this.resolveOwner(header.cwd)
+          if (owner !== undefined) {
+            await owner.attachSession(header.id)
+            accounted.add(header.id)
+            adopted.push(header.id)
+          }
+        } catch {
+          // Unresolvable or invalid cwd: leave ungrouped
+        }
+      }
+      return adopted
+    })
   }
 
   private async createCanonical(canonical: string, title?: string, firstUse = false): Promise<WorkspaceEntity> {
@@ -861,7 +927,7 @@ export class WorkspaceRegistry extends Service {
         return
       }
       this.sessionPaths.set(header.id, path)
-      this.sessionOwnerPaths.set(header.id, await ownerCandidatePaths(path))
+      this.sessionOwnerPaths.set(header.id, await this.getOwnerCandidatePaths(path))
       this.invalidSessionPaths.delete(header.id)
     } catch (error) {
       if (fullyQualifiedWorkspacePath(header.cwd)

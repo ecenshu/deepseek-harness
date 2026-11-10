@@ -4692,6 +4692,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         parameters: [{ name: 'path', description: 'Existing directory path in a fully qualified spelling.' }],
         returns: 'the workspace owning the path, when one exists.',
       },
+      {
+        signature: 'adoptSessions(headers: readonly SessionHeader[]): Promise<readonly SessionId[]>',
+        description: 'Adopt unaccounted sessions into their owning workspaces. Runs on the operation queue. For each header that is not accounted by any workspace record, does not originate from a subagent, and has a resolvable working directory, resolves its owning workspace and attaches the session. Headers are processed oldest `createdAt` first so the newest session ends up first in the workspace order.',
+        parameters: [{ name: 'headers', description: 'Session headers to evaluate for adoption.' }],
+        returns: 'Identities of all newly adopted sessions.',
+      },
     ],
   },
   {

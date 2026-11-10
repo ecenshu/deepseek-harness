@@ -599,9 +599,22 @@ async resolveByPath(path: string): Promise<Workspace | undefined>
  * @returns the workspace owning the path, when one exists.
  */
 async resolveOwner(path: string): Promise<Workspace | undefined>
+
+/**
+ * Adopt unaccounted sessions into their owning workspaces.
+ * Runs on the operation queue. For each header that is not accounted by any
+ * workspace record, does not originate from a subagent, and has a resolvable
+ * working directory, resolves its owning workspace and attaches the session.
+ * Headers are processed oldest `createdAt` first so the newest session ends up
+ * first in the workspace order.
+ *
+ * @param headers - Session headers to evaluate for adoption.
+ * @returns Identities of all newly adopted sessions.
+ */
+adoptSessions(headers: readonly SessionHeader[]): Promise<readonly SessionId[]>
 ```
 
-Types: [SessionId](core.md)
+Types: [SessionHeader](persistence.md) · [SessionId](core.md)
 
 Source: [`packages/workspace/workspace/src/index.ts`](../../packages/workspace/workspace/src/index.ts)
 

@@ -13,7 +13,6 @@ import type { SessionHeader, SessionId } from '@deepseek-ai/dsh-session'
 import type { KvTable } from '@deepseek-ai/dsh-storage-domain'
 import type { WorkspaceRecord } from './spec.ts'
 import type { Workspace, WorkspaceId } from './types.ts'
-import { ownerCandidatePaths } from './owner-paths.ts'
 import { realpathNormalize } from './paths.ts'
 
 /** An insertSessionBefore request named a session or anchor not on the account (storage failures stay plain errors). */
@@ -55,6 +54,13 @@ export interface WorkspaceEntityHost {
    * no session with this id.
    */
   readSessionHeader(id: SessionId): Promise<SessionHeader>
+
+  /**
+   * Resolve canonical owner candidate paths for a canonical directory, leveraging registry cache.
+   * @param canonicalCwd - Canonical directory path.
+   * @returns Canonical owner candidate paths, most specific first.
+   */
+  ownerCandidates(canonicalCwd: string): Promise<readonly string[]>
 
   /**
    * Publish a successfully validated canonical cwd and owner candidates to the projection index.
@@ -138,7 +144,7 @@ export class WorkspaceEntity implements Workspace {
           + `its cwd '${header.cwd}' is not a directory`,
         )
       }
-      const owners = await ownerCandidatePaths(cwd)
+      const owners = await this.host.ownerCandidates(cwd)
       if (!owners.includes(this.record.path)) {
         throw new Error(
           `cannot attach session '${sessionId}' to workspace '${this.record.path}': `
