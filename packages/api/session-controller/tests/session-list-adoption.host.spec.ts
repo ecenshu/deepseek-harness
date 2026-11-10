@@ -84,4 +84,29 @@ describe('session.list workspace adoption', () => {
     const response = await remote.list({})
     expect(response.ok).toBe(true)
   })
+
+  it('an adoption that throws synchronously does not fail the list', async () => {
+    const ctx = new Context()
+    ownedContexts.add(ctx)
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(SessionProjectionRegistry)
+    await ctx.plugin(AgentRegistry)
+
+    ctx.provide('sessionPersistence', testSessionPersistence(ctx, {
+      list: async () => [header('persisted-1', '/workspace')],
+    }))
+    const adoptSessions = vi.fn(() => {
+      throw new Error('simulated synchronous adoption failure')
+    })
+    ctx.provide('workspaceRegistry', { adoptSessions } as never)
+
+    const remote = await createSessionTestRemote(ctx, {
+      defaultModelSelection: () => ({ provider: 'p', model: 'm' }),
+      cwd: '/tmp',
+    })
+
+    const response = await remote.list({})
+    expect(response.ok).toBe(true)
+    expect(adoptSessions).toHaveBeenCalled()
+  })
 })

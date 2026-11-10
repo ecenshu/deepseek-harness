@@ -147,7 +147,9 @@ export class ApiSessionList {
     signal?.throwIfAborted()
     const records = await this.ctx.sessionQuery.listSessions(signal)
     signal?.throwIfAborted()
-    this.ctx.get('workspaceRegistry')?.adoptSessions(records.map(record => record.header)).catch((error: unknown) => {
+    void (async () => {
+      await this.ctx.get('workspaceRegistry')?.adoptSessions(records.map(record => record.header))
+    })().catch((error: unknown) => {
       this.ctx.logger.warn(`session-list: session adoption failed: ${String(error)}`)
     })
     const items: SessionSummary[] = []
