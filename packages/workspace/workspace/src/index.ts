@@ -13,6 +13,7 @@ import type {} from '@deepseek-ai/dsh-session-persistence'
 import type { DomainGlobal, KvTable } from '@deepseek-ai/dsh-storage-domain'
 import { WorkspaceEntity } from './entity.ts'
 import type { WorkspaceEntityHost } from './entity.ts'
+import { ownerCandidatePaths } from './owner-paths.ts'
 
 export { WorkspaceMoveInvalidError } from './entity.ts'
 import { defaultWorkspaceTitle, fullyQualifiedWorkspacePath, realpathNormalize } from './paths.ts'
@@ -192,16 +193,18 @@ export class WorkspaceRegistry extends Service {
   private readonly entities = new Map<WorkspaceId, WorkspaceEntity>()
   private readonly headers = new Map<SessionId, SessionHeader>()
   private readonly sessionPaths = new Map<SessionId, string>()
+  private readonly sessionOwnerPaths = new Map<SessionId, readonly string[]>()
   private readonly missingSessionPaths = new Set<SessionId>()
   private readonly invalidSessionPaths = new Map<SessionId, string>()
   private operationTail: Promise<void> = Promise.resolve()
 
   private readonly host: WorkspaceEntityHost = {
     table: () => this.requireTable(),
-    candidateMatches: (id, path) => this.sessionPaths.get(id) === path || this.missingSessionPaths.has(id),
+    candidateMatches: (id, path) => this.sessionOwnerPaths.get(id)?.includes(path) === true || this.missingSessionPaths.has(id),
     readSessionHeader: id => this.readSessionHeader(id),
-    rememberSessionPath: (id, path) => {
+    rememberSessionPath: (id, path, owners) => {
       this.sessionPaths.set(id, path)
+      this.sessionOwnerPaths.set(id, owners)
       this.missingSessionPaths.delete(id)
       this.invalidSessionPaths.delete(id)
     },
@@ -523,6 +526,27 @@ export class WorkspaceRegistry extends Service {
     return undefined
   }
 
+  /**
+   * Resolve the owning workspace for a directory path without creating or
+   * mutating a workspace. Evaluates owner candidates (the directory itself,
+   * layout ancestors, and git common directory) and returns the entity for
+   * the first candidate that is a registered workspace. A missing path
+   * rejects during `realpath`; an existing path with no registered owner
+   * returns `undefined`.
+   * @param path - Existing directory path in a fully qualified spelling.
+   * @returns the workspace owning the path, when one exists.
+   */
+  async resolveOwner(path: string): Promise<Workspace | undefined> {
+    const canonical = await realpathNormalize(path)
+    const candidates = await ownerCandidatePaths(canonical)
+    for (const candidate of candidates) {
+      for (const entity of this.entities.values()) {
+        if (entity.path === candidate) return entity
+      }
+    }
+    return undefined
+  }
+
   private async createCanonical(canonical: string, title?: string, firstUse = false): Promise<WorkspaceEntity> {
     for (const entity of this.entities.values()) {
       if (entity.path === canonical) return entity
@@ -811,6 +835,7 @@ export class WorkspaceRegistry extends Service {
   private async replaceHeaderIndex(headers: readonly SessionHeader[]): Promise<void> {
     this.headers.clear()
     this.sessionPaths.clear()
+    this.sessionOwnerPaths.clear()
     this.missingSessionPaths.clear()
     this.invalidSessionPaths.clear()
     await this.indexHeaders(headers)
@@ -823,6 +848,7 @@ export class WorkspaceRegistry extends Service {
   private async indexHeader(header: SessionHeader): Promise<void> {
     this.headers.set(header.id, header)
     this.sessionPaths.delete(header.id)
+    this.sessionOwnerPaths.delete(header.id)
     this.missingSessionPaths.delete(header.id)
     if (header.cwd === undefined) {
       this.invalidSessionPaths.set(header.id, 'header has no cwd')
@@ -835,6 +861,7 @@ export class WorkspaceRegistry extends Service {
         return
       }
       this.sessionPaths.set(header.id, path)
+      this.sessionOwnerPaths.set(header.id, await ownerCandidatePaths(path))
       this.invalidSessionPaths.delete(header.id)
     } catch (error) {
       if (fullyQualifiedWorkspacePath(header.cwd)
@@ -865,7 +892,7 @@ export class WorkspaceRegistry extends Service {
         const path = this.sessionPaths.get(sessionId)
         const reason = this.invalidSessionPaths.get(sessionId)
           ?? (this.headers.has(sessionId)
-            ? `canonical cwd '${path}' differs from workspace path '${record.path}'`
+            ? `canonical cwd '${path}' is not owned by workspace path '${record.path}'`
             : 'session header is missing')
         this.ctx.logger.warn(
           `workspace '${entity.id}' filtered session '${sessionId}' from membership: ${reason}`,

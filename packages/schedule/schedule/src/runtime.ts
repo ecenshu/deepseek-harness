@@ -478,12 +478,12 @@ export class ScheduleRuntime {
     return this.activate(sessionId)
   }
 
-  /** Attach a created Session to the Workspace registered at its directory; a failure is logged and does not stop delivery. */
+  /** Attach a created Session to the owning Workspace; a failure is logged and does not stop delivery. */
   private async joinWorkspace(sessionId: SessionIdType, cwd: string | undefined): Promise<void> {
     const registry = this.ctx.get('workspaceRegistry')
     if (registry === undefined || cwd === undefined) return
     try {
-      await (await registry.resolveByPath(cwd))?.attachSession(sessionId)
+      await (await registry.resolveOwner(cwd))?.attachSession(sessionId)
     } catch (error: unknown) {
       this.ctx.logger.warn(`schedule: Session ${sessionId} did not join the Workspace at ${cwd}: ${String(error)}`)
     }

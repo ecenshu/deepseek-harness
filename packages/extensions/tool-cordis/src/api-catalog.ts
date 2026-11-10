@@ -4686,6 +4686,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         parameters: [{ name: 'path', description: 'Existing directory path in a fully qualified spelling.' }],
         returns: 'the workspace owning the canonical path, when one exists.',
       },
+      {
+        signature: 'async resolveOwner(path: string): Promise<Workspace | undefined>',
+        description: 'Resolve the owning workspace for a directory path without creating or mutating a workspace. Evaluates owner candidates (the directory itself, layout ancestors, and git common directory) and returns the entity for the first candidate that is a registered workspace. A missing path rejects during `realpath`; an existing path with no registered owner returns `undefined`.',
+        parameters: [{ name: 'path', description: 'Existing directory path in a fully qualified spelling.' }],
+        returns: 'the workspace owning the path, when one exists.',
+      },
     ],
   },
   {

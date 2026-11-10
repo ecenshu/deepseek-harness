@@ -39,6 +39,7 @@ interface HarnessOptions {
   liveSessions?: SessionHeader[]
   sessionStore?: boolean
   backend?: StorageBackend
+  beforePlugin?: (ctx: Context) => void
 }
 
 /** Boot the real storage/domain/registry composition over controllable header-only peers. */
@@ -70,6 +71,7 @@ async function harness(options: HarnessOptions = {}) {
 
   const changes: DomainChanged[] = []
   ctx.on('domain/changed', (change) => { changes.push(change) })
+  if (options.beforePlugin !== undefined) options.beforePlugin(ctx)
   const fiber = await ctx.plugin(WorkspaceRegistry)
   const initChanges = [...changes]
   changes.length = 0
@@ -1535,6 +1537,109 @@ describe('first-use Workspace preparation', () => {
     expect(storedState(pool).defaultWorkspaceId).toBeUndefined()
     await expect(realpath(join(h.directoryRoot, 'nested', 'Workspace'))).resolves.toBe(join(h.directoryRoot, 'nested', 'Workspace'))
     expect(await h.registry.initializeDefault(h.resolveDirectory)).toBeDefined()
+  })
+})
+
+describe('worktree ownership', () => {
+  async function makeWorktree(repoName: string, worktreeName: string) {
+    const repo = await makeDir(repoName)
+    const canonicalRepo = await realpath(repo)
+    const commondirDir = join(canonicalRepo, '.git', 'worktrees', worktreeName)
+    await mkdir(commondirDir, { recursive: true })
+    await writeFile(join(commondirDir, 'commondir'), '../..\n')
+
+    const worktree = join(canonicalRepo, 'worktrees', worktreeName)
+    await mkdir(worktree, { recursive: true })
+    const canonicalWorktree = await realpath(worktree)
+    await writeFile(join(canonicalWorktree, '.git'), `gitdir: ${commondirDir}\n`)
+
+    return { repo: canonicalRepo, worktree: canonicalWorktree }
+  }
+
+  it('attaches a session whose cwd is a linked worktree of the workspace', async () => {
+    const { repo, worktree } = await makeWorktree('repo-attach', 'wt')
+    const result = await harness({ sessions: [header('wt-session', worktree)] })
+    onTestFinished(() => result.ctx.fiber.dispose())
+    const workspace = await result.registry.create(repo)
+    await workspace.attachSession(SessionId('wt-session'))
+    expect(workspace.sessionIds).toContain('wt-session')
+  })
+
+  it('keeps rejecting a cwd that no rule ties to the workspace', async () => {
+    const dir = await makeDir('strict-owner')
+    const elsewhere = await makeDir('unrelated-dir')
+    const result = await harness({ sessions: [header('unrelated-session', elsewhere)] })
+    onTestFinished(() => result.ctx.fiber.dispose())
+    const workspace = await result.registry.create(dir)
+    await result.registry.create(elsewhere)
+    await expect(workspace.attachSession(SessionId('unrelated-session'))).rejects.toThrow(/resolves to/)
+    expect(workspace.sessionIds).toEqual([])
+  })
+
+  it('projects an accounted worktree session after restart', async () => {
+    const { repo, worktree } = await makeWorktree('repo-restart', 'wt')
+    const id = WorkspaceId('00000000-0000-4000-8000-000000000099')
+    const pool = storedPool([[id, record(repo, ['wt'])]], { initialized: true, workspaceIds: [id] })
+    const result = await harness({ pool, sessions: [header('wt', worktree)] })
+    onTestFinished(() => result.ctx.fiber.dispose())
+    expect(result.registry.get(id)?.sessionIds).toContain('wt')
+  })
+
+  it('does not prune an accounted worktree session on the next write', async () => {
+    const { repo, worktree } = await makeWorktree('repo-prune', 'wt')
+    const id = WorkspaceId('00000000-0000-4000-8000-000000000098')
+    const pool = storedPool([[id, record(repo, ['wt'])]], { initialized: true, workspaceIds: [id] })
+    const result = await harness({ pool, sessions: [header('wt', worktree)] })
+    onTestFinished(() => result.ctx.fiber.dispose())
+    const workspace = result.registry.get(id)!
+    await workspace.setTitle('Updated Title')
+    expect(storedRecord(pool, id).sessionIds).toContain('wt')
+  })
+
+  it('logs no filtered-candidate warning for an owned worktree session', async () => {
+    const { repo, worktree } = await makeWorktree('repo-warn', 'wt')
+    const id = WorkspaceId('00000000-0000-4000-8000-000000000097')
+    const pool = storedPool([[id, record(repo, ['wt'])]], { initialized: true, workspaceIds: [id] })
+    let warned = false
+    const result = await harness({
+      pool,
+      sessions: [header('wt', worktree)],
+      beforePlugin: (ctx) => {
+        const originalWarn = ctx.logger.warn.bind(ctx.logger)
+        ctx.logger.warn = (message: string, ...args: unknown[]) => {
+          if (typeof message === 'string' && message.includes("filtered session 'wt'")) {
+            warned = true
+          }
+          originalWarn(message, ...args)
+        }
+      },
+    })
+    onTestFinished(() => result.ctx.fiber.dispose())
+    expect(warned).toBe(false)
+  })
+
+  it('resolveOwner prefers an exact workspace over the worktree owner', async () => {
+    const { repo, worktree } = await makeWorktree('repo-prefer', 'w')
+    const result = await harness()
+    onTestFinished(() => result.ctx.fiber.dispose())
+    await result.registry.create(repo)
+    const wtWorkspace = await result.registry.create(worktree)
+    expect(await result.registry.resolveOwner(worktree)).toBe(wtWorkspace)
+  })
+
+  it('resolveOwner returns undefined for a worktree of an unregistered repo', async () => {
+    const { repo: _unregistered, worktree } = await makeWorktree('repo-unregistered', 'w')
+    const result = await harness()
+    onTestFinished(() => result.ctx.fiber.dispose())
+    expect(await result.registry.resolveOwner(worktree)).toBeUndefined()
+  })
+
+  it('resolveByPath stays exact for a worktree path', async () => {
+    const { repo, worktree } = await makeWorktree('repo-exact', 'w')
+    const result = await harness()
+    onTestFinished(() => result.ctx.fiber.dispose())
+    await result.registry.create(repo)
+    expect(await result.registry.resolveByPath(worktree)).toBeUndefined()
   })
 })
 

@@ -70,7 +70,7 @@ The first successful registration records its identity durably. Repeated calls r
 
 ### Grouping sessions under a project
 
-A session joins the project of the directory it runs in: create a session in a project's directory and it appears under that project, newest first. A session can only belong to one project. A new session must have a recorded directory that resolves to the project's directory. Already-accounted sessions keep their project and order when their fully qualified recorded path is missing, including a dangling symlink; renaming or reordering the project does not remove that ownership. Missing headers, invalid recorded paths, existing mismatched directories, and filesystem failures other than ENOENT remain excluded. Keeping ownership does not recreate the directory or relax new-session attachment, so a fork can still fail to attach while the directory is missing.
+A session joins the project of the directory it runs in, or the owning project when running in a linked git worktree or a `worktrees/<name>` directory layout under a project. Create a session in a project's directory or worktree and it appears under that project, newest first. A session can only belong to one project. A new session must have a recorded directory that resolves to the project's directory or is owned by it through worktree candidate rules (layout rule matching `worktrees` segments case-sensitively on the canonical path, or git common directory rule). `resolveOwner` returns the owning workspace, preferring an exact directory match over worktree ancestors, while `resolveByPath` remains strictly exact. Already-accounted sessions keep their project and order when their fully qualified recorded path is missing, including a dangling symlink; renaming or reordering the project does not remove that ownership. Missing headers, invalid recorded paths, existing unowned directories, and filesystem failures other than ENOENT remain excluded. Keeping ownership does not recreate the directory or relax new-session attachment, so a fork can still fail to attach while the directory is missing.
 
 ### Hiding and restoring sessions, and removing projects
 
@@ -111,6 +111,7 @@ Archive admission is a capability seam over two Host events this package declare
 | [`src/spec.ts`](src/spec.ts) | Domain declaration: record schema, registry state, `defineDomain` spec |
 | [`src/types.ts`](src/types.ts) | Public `Workspace` interface and `WorkspaceId` brand |
 | [`src/paths.ts`](src/paths.ts) | The `realpath` uniqueness canon |
+| [`src/owner-paths.ts`](src/owner-paths.ts) | Candidate owner directories for worktree sessions |
 
 ### Durable shape
 

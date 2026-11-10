@@ -70,7 +70,7 @@ ctx.workspaceRegistry.list() // shows the project, newest first
 
 ### 将会话归入项目
 
-会话加入它运行目录所在的项目：在项目目录中创建会话，它就会出现在该项目下，新到旧排列。一个会话只能属于一个项目。新会话必须记录可解析为项目目录的工作目录。已记账会话的完整绝对路径缺失时（包括悬空符号链接），仍保留原项目与顺序；重命名或排序项目不会移除该归属。头部缺失、无效记录路径、现存但不匹配的目录，以及 ENOENT 以外的文件系统错误仍会被排除。保留归属不会重建目录，也不放宽新会话挂接要求，因此目录缺失时 Fork 仍可能挂接失败。
+会话加入它运行目录所在的项目，或者在链接的 git worktree 或项目下的 `worktrees/<name>` 目录结构中运行时加入其所属项目。在项目目录或 worktree 中创建会话，它就会出现在该项目下，新到旧排列。一个会话只能属于一个项目。新会话必须记录可解析为项目目录的工作目录，或通过 worktree 候选规则（在规范路径上区分大小写匹配 `worktrees` 片段的布局规则，或 git common directory 规则）由该项目拥有。`resolveOwner` 返回所属工作区，优先匹配完全一致的目录而非 worktree 祖先，而 `resolveByPath` 保持严格精确匹配。已记账会话的完整绝对路径缺失时（包括悬空符号链接），仍保留原项目与顺序；重命名或排序项目不会移除该归属。头部缺失、无效记录路径、现存但不匹配的目录，以及 ENOENT 以外的文件系统错误仍会被排除。保留归属不会重建目录，也不放宽新会话挂接要求，因此目录缺失时 Fork 仍可能挂接失败。
 
 ### 隐藏、恢复会话与移除项目
 
@@ -112,6 +112,7 @@ Workspace 注册不意味着拥有其目录。未来的破坏性文件系统操�
 | [`src/spec.ts`](src/spec.ts) | 领域声明：记录 schema、注册表状态、`defineDomain` 规范 |
 | [`src/types.ts`](src/types.ts) | 公开 `Workspace` 接口与 `WorkspaceId` 品牌 |
 | [`src/paths.ts`](src/paths.ts) | `realpath` 唯一性规范 |
+| [`src/owner-paths.ts`](src/owner-paths.ts) | worktree 会话的候选所属目录 |
 
 ### 持久形态
 

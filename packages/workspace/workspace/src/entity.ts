@@ -13,6 +13,7 @@ import type { SessionHeader, SessionId } from '@deepseek-ai/dsh-session'
 import type { KvTable } from '@deepseek-ai/dsh-storage-domain'
 import type { WorkspaceRecord } from './spec.ts'
 import type { Workspace, WorkspaceId } from './types.ts'
+import { ownerCandidatePaths } from './owner-paths.ts'
 import { realpathNormalize } from './paths.ts'
 
 /** An insertSessionBefore request named a session or anchor not on the account (storage failures stay plain errors). */
@@ -56,11 +57,12 @@ export interface WorkspaceEntityHost {
   readSessionHeader(id: SessionId): Promise<SessionHeader>
 
   /**
-   * Publish a successfully validated canonical cwd to the projection index.
+   * Publish a successfully validated canonical cwd and owner candidates to the projection index.
    * @param id - Validated session id.
    * @param path - Canonical existing directory from the immutable header cwd.
+   * @param owners - Canonical candidate owner directories for cwd.
    */
-  rememberSessionPath(id: SessionId, path: string): void
+  rememberSessionPath(id: SessionId, path: string, owners: readonly string[]): void
 }
 
 /** Chain-slot abort sentinel thrown by the update fn when the record needs no change; only `mutate` observes it. */
@@ -136,13 +138,14 @@ export class WorkspaceEntity implements Workspace {
           + `its cwd '${header.cwd}' is not a directory`,
         )
       }
-      if (cwd !== this.record.path) {
+      const owners = await ownerCandidatePaths(cwd)
+      if (!owners.includes(this.record.path)) {
         throw new Error(
           `cannot attach session '${sessionId}' to workspace '${this.record.path}': `
           + `its cwd resolves to '${cwd}'`,
         )
       }
-      this.host.rememberSessionPath(sessionId, cwd)
+      this.host.rememberSessionPath(sessionId, cwd, owners)
     }
     await this.mutate(record => record.sessionIds.includes(sessionId)
       ? record

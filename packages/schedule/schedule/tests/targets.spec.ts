@@ -65,13 +65,17 @@ async function setup(tasks: ScheduleTask[], limits = LIMITS, options: Parameters
 async function placement(test: Awaited<ReturnType<typeof setup>>) {
   await test.ctx.plugin(SessionTitleService, { fallbackMaxWords: 5, fallbackMaxBytes: 40, maxTitleBytes: 80 })
   const attachSession = vi.fn<(sessionId: SessionId) => Promise<void>>(async () => {})
+  const resolveOwner = vi.fn(async (path: string) => {
+    if (path === '/missing') throw new Error(`ENOENT: ${path}`)
+    return (path === '/work' || path === '/work/worktrees/wt') ? { attachSession } : undefined
+  })
   const resolveByPath = vi.fn(async (path: string) => {
     if (path === '/missing') throw new Error(`ENOENT: ${path}`)
     return path === '/work' ? { attachSession } : undefined
   })
-  test.ctx.provide('workspaceRegistry', { resolveByPath, archivedSessionIds: [] })
+  test.ctx.provide('workspaceRegistry', { resolveOwner, resolveByPath, archivedSessionIds: [] } as never)
   const title = (id: SessionId): string | undefined => test.ctx.sessionTitle.get(test.agents.get(id)!.session)?.title
-  return { attachSession, resolveByPath, title }
+  return { attachSession, resolveOwner, resolveByPath, title }
 }
 
 /**
@@ -576,6 +580,16 @@ it('joins a created Session to the Workspace at its directory and names it after
   expect(test.agents.get(reserved)?.followup).toHaveBeenCalledOnce()
 })
 
+it('joins the owning workspace when the task cwd is a worktree', async () => {
+  const reserved = SessionId('reserved')
+  const tasks = [task({ kind: 'new_once', sessionId: reserved, create: { cwd: '/work/worktrees/wt' } })]
+  const test = await setup(tasks)
+  const placed = await placement(test)
+  test.runtime.requestDrive()
+  await vi.advanceTimersByTimeAsync(1000)
+  expect(placed.attachSession).toHaveBeenCalledExactlyOnceWith(reserved)
+})
+
 it('names each per-occurrence Session with its launch minute in the task time zone', async () => {
   const tasks = [task({ kind: 'new', create: {} }, 'DTSTART;TZID=Asia/Shanghai:20260916T080001\nRRULE:FREQ=DAILY')]
   const test = await setup(tasks)
@@ -613,7 +627,7 @@ it('leaves a created Session outside every Workspace when no Workspace owns its 
   const placed = await placement(test)
   test.runtime.requestDrive()
   await vi.advanceTimersByTimeAsync(1000)
-  expect(placed.resolveByPath).toHaveBeenCalledExactlyOnceWith('/elsewhere')
+  expect(placed.resolveOwner).toHaveBeenCalledExactlyOnceWith('/elsewhere')
   expect(placed.attachSession).not.toHaveBeenCalled()
   expect(placed.title(reserved)).toBe('Task')
 })
